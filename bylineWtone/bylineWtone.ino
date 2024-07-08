@@ -1,0 +1,277 @@
+
+
+/* Boxy~the~robot 
+   created by: kyle
+   For: Reuseum Educational 
+   This is boxy controlled
+   by line input code
+       with tones
+     .__________________.          
+     |                  |
+     |     ~~      ~~   |
+  ---|      #       #   |---
+{<><}|          ^       |{<><}
+{<><}|__________________|{<><}
+  ---                    ---
+*/
+#include <ESPmDNS.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <FS.h>
+#include <WebSocketsServer.h>
+#include <SPIFFS.h>
+#include <ESP32_Servo.h>
+#include <ToneESP32.h>
+#include <math.h>
+
+const char* ssid = "boxy"; //basicaly the robots name: "ssid.local" 
+const char* password = ""; // password to secure your robot
+int channel = 6;  // Specify your desired channel //wifi chanel 1-3-11 work best
+
+// Define motor pins
+const int motor1a = 16;  // Replace with your actual pin numbers
+const int motor1b = 17;
+const int motor2a = 18;  // Replace with your actual pin numbers
+const int motor2b = 19;
+
+// Define LED pin
+const int ledPin = 2;  // Replace with your actual pin number
+
+// Define servo pin
+const int servoPin = 13;  // Changed to GPIO 13 (or another available pin)
+
+// Define speaker pin and channel
+const int speakerPin = 25;  // Define your speaker pin here
+const int speakerChannel = 0;  // Define your speaker channel here
+
+// Define servo object
+Servo servo;
+
+// Define tone object
+ToneESP32 buzzer(speakerPin, speakerChannel);  // Create the ToneESP32 object
+
+// Define motor speed variable
+int pwm = 255; // Default PWM value (adjust as needed)
+
+WebServer server(80);
+WebSocketsServer webSocket = WebSocketsServer(81);
+
+void setup() {
+    Serial.begin(115200);
+
+    // Set up motor pins
+    pinMode(motor1a, OUTPUT);
+    pinMode(motor1b, OUTPUT);
+    pinMode(motor2a, OUTPUT);
+    pinMode(motor2b, OUTPUT);
+
+    // Set up LED pin
+    pinMode(ledPin, OUTPUT);
+
+    // Set up servo
+    servo.attach(servoPin);
+
+    // Connect to Wi-Fi
+    WiFi.softAP(ssid, password, channel);
+    IPAddress apIP = WiFi.softAPIP();
+    Serial.printf("Access Point IP address: %s\n", apIP.toString().c_str());
+
+    // Initialize SPIFFS
+    if (!SPIFFS.begin()) {
+        Serial.println("Failed to mount file system");
+        return;
+    }
+
+    // Serve "byline.html" from SPIFFS when root URL is requested
+    server.serveStatic("/", SPIFFS, "/byline.html");
+    
+     // Initialize mDNS
+  if (!MDNS.begin(ssid)) {   // Set the hostname to "esp32.local"
+    Serial.println("Error setting up MDNS responder!");
+    while(1) {
+      delay(1000);
+    }
+  }
+  Serial.println("mDNS responder started");
+
+    // Start the server
+    server.begin();
+    Serial.println("HTTP server started");
+
+    // Initialize WebSocket
+    webSocket.begin();
+    webSocket.onEvent(handleWebSocketMessage); // Set the WebSocket event handler
+}
+
+void loop() {
+    server.handleClient();
+    webSocket.loop();
+    delay(10); // Add a small delay to avoid watchdog timer reset
+    //Serial.printf("Free heap memory: %u\n", ESP.getFreeHeap());
+}
+
+// Function to handle WebSocket messages
+void handleWebSocketMessage(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+    if (type == WStype_TEXT) {
+        String message = (char *)payload;
+        message.trim(); // Trim any extra whitespace
+        Serial.printf("Received WebSocket message: %s\n", message.c_str());
+
+        // Parse the message and execute corresponding actions
+        if (message.startsWith("F,")) {
+            int time_ms_forward = message.substring(2).toInt();
+            moveForward(time_ms_forward);
+        } else if (message.startsWith("B,")) {
+            int time_ms_backward = message.substring(2).toInt();
+            moveBackward(time_ms_backward);
+        } else if (message.startsWith("R,")) {
+            int time_ms_right = message.substring(2).toInt();
+            turnRight(time_ms_right);
+        } else if (message.startsWith("L,")) {
+            int time_ms_left = message.substring(2).toInt();
+            turnLeft(time_ms_left);
+        } else if (message.startsWith("P,")) {
+            pwm = message.substring(2).toInt();
+            analogWrite(motor1a, pwm); // Example for motor1a
+            analogWrite(motor2a, pwm); // Example for motor2a
+            Serial.print("Setting PWM to: ");
+            Serial.println(pwm);
+        } else if (message.startsWith("S,")) {
+            int servoPos = message.substring(2).toInt();
+            servo.write(servoPos);
+            Serial.print("Setting servo position to: ");
+            Serial.println(servoPos);
+        } else if (message.startsWith("T,")) {
+            playNoteFromInput(message.substring(2));
+        } else {
+            String errorMessage = "Invalid command: " + message;
+            sendErrorMessage(errorMessage);
+        }
+        delay(100); // Add a small delay to avoid overloading the system
+    } else if (type == WStype_DISCONNECTED) {
+        Serial.printf("Client [%u] disconnected.\n", num);
+    } else if (type == WStype_CONNECTED) {
+        IPAddress ip = webSocket.remoteIP(num);
+        Serial.printf("Client [%u] connected from %s.\n", num, ip.toString().c_str());
+        webSocket.sendTXT(num, "Connected to Boxy!");
+    }
+}
+
+void sendErrorMessage(String message) {
+    webSocket.broadcastTXT(message); // Send to all connected clients
+    Serial.println("Sent error message: " + message);
+}
+
+void moveForward(int duration) {
+    digitalWrite(motor1a, HIGH);
+    digitalWrite(motor1b, LOW);
+    digitalWrite(motor2a, HIGH);
+    digitalWrite(motor2b, LOW);
+    delay(duration);
+    stopMotors();
+    Serial.println("Moving forward");
+}
+
+void moveBackward(int duration) {
+    digitalWrite(motor1a, LOW);
+    digitalWrite(motor1b, HIGH);
+    digitalWrite(motor2a, LOW);
+    digitalWrite(motor2b, HIGH);
+    delay(duration);
+    stopMotors();
+    Serial.println("Moving backward");
+}
+
+void turnRight(int duration) {
+    digitalWrite(motor1a, LOW);
+    digitalWrite(motor1b, HIGH);
+    digitalWrite(motor2a, HIGH);
+    digitalWrite(motor2b, LOW);
+    delay(duration);
+    stopMotors();
+    Serial.println("Turning right");
+}
+
+void turnLeft(int duration) {
+    digitalWrite(motor1a, HIGH);
+    digitalWrite(motor1b, LOW);
+    digitalWrite(motor2a, LOW);
+    digitalWrite(motor2b, HIGH);
+    delay(duration);
+    stopMotors();
+    Serial.println("Turning left");
+}
+
+void stopMotors() {
+    digitalWrite(motor1a, LOW);
+    digitalWrite(motor1b, LOW);
+    digitalWrite(motor2a, LOW);
+    digitalWrite(motor2b, LOW);
+}
+
+// Function to parse the input and play the note
+void playNoteFromInput(String input) {
+    input.trim();
+    int commaIndex1 = input.indexOf(',');
+    int commaIndex2 = input.indexOf(',', commaIndex1 + 1);
+
+    String noteString;
+    int duration;
+
+    if (commaIndex1 == -1) {
+        Serial.println("Invalid note command format");
+        return;
+    } else if (commaIndex2 == -1) {
+        noteString = input.substring(0, commaIndex1);
+        duration = input.substring(commaIndex1 + 1).toInt();
+    } else {
+        noteString = input.substring(commaIndex1 + 1, commaIndex2);
+        duration = input.substring(commaIndex2 + 1).toInt();
+    }
+
+    // Parse the note and octave
+    char note = noteString[0];
+    int octave = 4; // Default octave is 4
+
+    if (noteString.length() > 1) {
+        octave = noteString.substring(1).toInt();
+    }
+
+    // Play the note using the ToneESP32 library
+    int frequency = getFrequencyFromNoteAndOctave(note, octave);
+    buzzer.tone(frequency, duration);
+    Serial.print("Playing note ");
+    Serial.print(noteString);
+    Serial.print(" for ");
+    Serial.print(duration);
+    Serial.println(" ms");
+}
+
+// Helper function to get the frequency of a note and octave
+int getFrequencyFromNoteAndOctave(char note, int octave) {
+    // Define the base frequencies for the notes in the 4th octave
+    const int C4 = 261;
+    const int D4 = 294;
+    const int E4 = 329;
+    const int F4 = 349;
+    const int G4 = 392;
+    const int A4 = 440;
+    const int B4 = 493;
+
+    int baseFrequency;
+
+    switch (note) {
+        case 'C': baseFrequency = C4; break;
+        case 'D': baseFrequency = D4; break;
+        case 'E': baseFrequency = E4; break;
+        case 'F': baseFrequency = F4; break;
+        case 'G': baseFrequency = G4; break;
+        case 'A': baseFrequency = A4; break;
+        case 'B': baseFrequency = B4; break;
+        default: return 0; // Invalid note
+    }
+
+    // Calculate the frequency for the given octave
+    int frequency = baseFrequency * pow(2, octave - 4);
+    return frequency;
+}
